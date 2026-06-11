@@ -1,3 +1,12 @@
+FROM python:3.10-slim as builder
+
+WORKDIR /app/data
+
+RUN pip install --no-cache-dir gdown
+
+RUN gdown 1Nhp62TulUs6kNDoO35Gx3iAiGLRIGoMS -O TCPFormer_ap3d_81.pth.tr
+RUN gdown 1I7uK45A4yCYvmZCRCFRXOnu7-MLfCUHy -O train.pkl
+
 FROM runpod/pytorch:1.0.3-cu1281-torch280-ubuntu2404
 
 WORKDIR /app
@@ -27,13 +36,13 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy small application files (keep large model weights last to avoid cache invalidation)
-COPY start.sh vlm.py local_pose_3d_server.py tcpformer_model.py train.pkl ./
+COPY start.sh vlm.py local_pose_3d_server.py tcpformer_model.py ./
 
 # Prepare runtime directories and permissions
 RUN mkdir -p /app/videos && chmod +x /app/start.sh
 
 # Copy large model weight last (minimize rebuilds of earlier layers)
-COPY TCPFormer_ap3d_81.pth.tr ./
+COPY --from=builder /app/data/* ./
 
 # Install Ollama and bake model into image (this step is large; keep at end)
 RUN curl -fsSL https://ollama.com/install.sh | sh
