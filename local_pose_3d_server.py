@@ -591,5 +591,9 @@ async def cleanup(req: CleanupRequest):
             pass
     return {"status": "success", "removed": removed}
 
+@app.get("/ping")
+async def health_check():
+    return {"status": "healthy"}
+
 if __name__ == "__main__":
     uvicorn.run("local_pose_3d_server:app", host="0.0.0.0", port=8000, reload=False)
