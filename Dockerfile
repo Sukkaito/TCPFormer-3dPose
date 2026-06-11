@@ -8,7 +8,8 @@ ENV VLM_API_URL="http://localhost:8000"
 
 # Install runtime system dependencies (kept together for single layer)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
+    libgl1 \
+    libglx-mesa0 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
