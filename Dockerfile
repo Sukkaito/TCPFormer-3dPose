@@ -46,8 +46,9 @@ COPY --from=builder /app/data/* ./
 
 # Install Ollama and bake model into image (this step is large; keep at end)
 RUN curl -fsSL https://ollama.com/install.sh | sh
-RUN ollama --version
-RUN ollama pull qwen2.5vl:7b
+RUN ollama serve & \
+    sleep 5 && \
+    ollama pull qwen2.5vl:7b
 
 # Expose ports (optional, services communicate via localhost inside container)
 EXPOSE 8000
