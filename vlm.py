@@ -19,38 +19,7 @@ Original file is located at
 
 # !ollama pull qwen2.5vl:7b
 
-import requests, json, time
-
-url = "http://localhost:11434/api/generate"
-
-payload = {
-    "model": "qwen2.5vl:7b",  # nhớ đúng tên model bạn đã pull
-    "prompt": 'Chỉ trả về JSON hợp lệ: {"ok": true}',
-    "stream": False,
-    "format": "json",
-    "options": {
-        "temperature": 0.0,
-        "num_predict": 60
-    }
-}
-
-for i in range(3):
-    try:
-        t0 = time.time()
-        r = requests.post(url, json=payload, timeout=300)  # tăng timeout
-        dt = time.time() - t0
-        print("status:", r.status_code, "| time:", round(dt, 2), "s")
-        print("raw:", r.text[:800])
-
-        r.raise_for_status()
-        data = r.json()
-        print("parsed response:", data.get("response", "")[:300])
-        break
-    except Exception as e:
-        print(f"try {i+1} failed:", e)
-        if i == 2:
-            raise
-        time.sleep(2)
+# lightweight container-friendly VLM service
 
 import os
 import re
@@ -60,7 +29,6 @@ import requests
 import nest_asyncio
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pyngrok import ngrok
 import uvicorn
 
 # ======================================
@@ -72,10 +40,10 @@ import uvicorn
 # os.environ["OLLAMA_MODEL"] = "qwen2.5vl:7b"
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
+# Fixed Ollama model (do not allow override)
+OLLAMA_MODEL = "qwen2.5vl:7b"
 
 nest_asyncio.apply()
-ngrok.kill()
 
 app = FastAPI(title="Colab VLM Pair Analyzer", version="1.1.0")
 
@@ -156,15 +124,7 @@ def analyze_pair(req: PairAnalyzeRequest):
 
 
 if __name__ == "__main__":
-    NGROK_TOKEN = os.getenv("NGROK_TOKEN", "3E10eQqvkn1ftIIAd3MIFnPRN0R_4NV4PuvfULSnBZBsqtMWz").strip()
-    if not NGROK_TOKEN:
-        raise RuntimeError("Missing NGROK_TOKEN (set os.environ['NGROK_TOKEN'])")
-
-    ngrok.set_auth_token(NGROK_TOKEN)
-    public = ngrok.connect(8000)
-    print("✅ PUBLIC URL:", public.public_url)
-    print("✅ analyze endpoint:", f"{public.public_url}/analyze-pair")
-
-    config = uvicorn.Config(app=app, host="0.0.0.0", port=8000, log_level="info")
+    port = int(os.getenv("VLM_PORT", "8001"))
+    config = uvicorn.Config(app=app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
     asyncio.get_event_loop().run_until_complete(server.serve())
