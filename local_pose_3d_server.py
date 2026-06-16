@@ -28,21 +28,23 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 ANGLE_KEYS = [
-    "left_shoulder", "right_shoulder",
-    "left_elbow", "right_elbow",
-    "left_hip", "right_hip",
-    "left_knee", "right_knee"
+    "spine_posture",
+    "left_knee_extension", "right_knee_extension",
+    "left_hip_flexion", "right_hip_flexion",
+    "left_shoulder_abduction", "right_shoulder_abduction",
+    "left_elbow_extension", "right_elbow_extension"
 ]
 
 ANGLE_LABELS_VI = {
-    "left_shoulder": "Vai trái",
-    "right_shoulder": "Vai phải",
-    "left_elbow": "Khuỷu tay trái",
-    "right_elbow": "Khuỷu tay phải",
-    "left_hip": "Hông trái",
-    "right_hip": "Hông phải",
-    "left_knee": "Đầu gối trái",
-    "right_knee": "Đầu gối phải",
+    "spine_posture": "Tư thế lưng (Cột sống)",
+    "left_knee_extension": "Độ gập gối trái",
+    "right_knee_extension": "Độ gập gối phải",
+    "left_hip_flexion": "Độ gập hông trái",
+    "right_hip_flexion": "Độ gập hông phải",
+    "left_shoulder_abduction": "Độ mở vai trái",
+    "right_shoulder_abduction": "Độ mở vai phải",
+    "left_elbow_extension": "Độ duỗi tay trái",
+    "right_elbow_extension": "Độ duỗi tay phải",
 }
 
 MP_IDX = {
@@ -97,6 +99,16 @@ try:
 except Exception as e:
     print(f"Failed to load TCPFormer: {e}")
     tcpformer_model = None
+
+yolo_model = None
+try:
+    print("Loading YOLO model for multi-person tracking...")
+    from ultralytics import YOLO
+    yolo_model = YOLO('yolov8n.pt')
+    yolo_model.to(DEVICE)
+    print("YOLO loaded successfully.")
+except Exception as e:
+    print(f"Failed to load YOLO: {e}")
 
 # =========================
 # DTO
@@ -178,6 +190,11 @@ def mp_to_h36m(lms, w, h):
 
 def h36m_to_kp3d(h36m_3d_frame):
     return {
+        "pelvis": h36m_3d_frame[0].tolist(),
+        "spine": h36m_3d_frame[7].tolist(),
+        "neck": h36m_3d_frame[8].tolist(),
+        "head": h36m_3d_frame[9].tolist(),
+        "head_top": h36m_3d_frame[10].tolist(),
         "left_shoulder": h36m_3d_frame[11].tolist(),
         "right_shoulder": h36m_3d_frame[14].tolist(),
         "left_elbow": h36m_3d_frame[12].tolist(),
@@ -200,13 +217,14 @@ def extract_pose_data_3d(video_url: str) -> Dict[str, Any]:
             raise Exception("Không mở được video")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        sample_rate = max(1, int(fps / 5))  # 5 fps
+        sample_rate = 1  # Lấy toàn bộ frame (30 hoặc 60 fps) vì động tác chỉ kéo dài 2-4s
         width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
         height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
         frame_index = 0
         valid_frames_meta = []
         h36m_2d_sequence = []
+        target_id = None
 
         with mp_pose.Pose(
             static_image_mode=False,
@@ -225,24 +243,68 @@ def extract_pose_data_3d(video_url: str) -> Dict[str, Any]:
                     continue
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                crop_x1, crop_y1, crop_x2, crop_y2 = 0, 0, int(width), int(height)
+                if yolo_model is not None:
+                    # Run YOLO tracking
+                    results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
+                    if results and len(results[0].boxes) > 0:
+                        boxes = results[0].boxes
+                        best_box = None
+                        
+                        if target_id is not None:
+                            # Tìm người đã được theo dõi
+                            for box in boxes:
+                                if box.id is not None and int(box.id.item()) == target_id:
+                                    best_box = box
+                                    break
+                                    
+                        if best_box is None:
+                            # Fallback: tìm người to nhất khung hình
+                            max_area = 0
+                            for box in boxes:
+                                xyxy = box.xyxy[0].cpu().numpy()
+                                area = (xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1])
+                                if area > max_area:
+                                    max_area = area
+                                    best_box = box
+                            if best_box is not None and best_box.id is not None:
+                                target_id = int(best_box.id.item())
+                                
+                        if best_box is not None:
+                            xyxy = best_box.xyxy[0].cpu().numpy()
+                            bx1, by1, bx2, by2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                            bw, bh = bx2 - bx1, by2 - by1
+                            margin_x, margin_y = int(bw * 0.1), int(bh * 0.1)
+                            
+                            crop_x1 = max(0, bx1 - margin_x)
+                            crop_y1 = max(0, by1 - margin_y)
+                            crop_x2 = min(int(width), bx2 + margin_x)
+                            crop_y2 = min(int(height), by2 + margin_y)
+                            
+                            rgb = rgb[crop_y1:crop_y2, crop_x1:crop_x2]
+
                 res = pose.process(rgb)
 
                 if res.pose_landmarks:
                     lms = res.pose_landmarks.landmark
-                    # Check visibility
-                    visible = True
-                    for name, idx in MP_IDX.items():
-                        if lms[idx].visibility < 0.5:
-                            visible = False
-                            break
+                    
+                    # Điều chỉnh lại tọa độ nếu frame đã bị crop
+                    if crop_x1 > 0 or crop_y1 > 0 or crop_x2 < int(width) or crop_y2 < int(height):
+                        crop_w = crop_x2 - crop_x1
+                        crop_h = crop_y2 - crop_y1
+                        for lm in lms:
+                            lm.x = (crop_x1 + lm.x * crop_w) / width
+                            lm.y = (crop_y1 + lm.y * crop_h) / height
 
-                    if visible:
-                        h36m_2d = mp_to_h36m(lms, width, height)
-                        h36m_2d_sequence.append(h36m_2d)
-                        valid_frames_meta.append({
-                            "frame_index": int(frame_index),
-                            "timestamp": round(frame_index / fps, 3)
-                        })
+                    # Bỏ kiểm tra visibility khắt khe để không bị mất frame ở đầu video
+                    # khi một phần cơ thể (ví dụ: gót chân, bàn tay) bị khuất ngoài màn hình.
+                    h36m_2d = mp_to_h36m(lms, width, height)
+                    h36m_2d_sequence.append(h36m_2d)
+                    valid_frames_meta.append({
+                        "frame_index": int(frame_index),
+                        "timestamp": round(frame_index / fps, 3)
+                    })
 
                 frame_index += 1
 
@@ -280,15 +342,23 @@ def extract_pose_data_3d(video_url: str) -> Dict[str, Any]:
 
             for i in range(num_frames):
                 kp3d = h36m_to_kp3d(output_3d_seq[i])
+                # Midpoint của 2 đầu gối làm tham chiếu cho spine
+                mid_knee = [
+                    (kp3d["left_knee"][0] + kp3d["right_knee"][0]) / 2,
+                    (kp3d["left_knee"][1] + kp3d["right_knee"][1]) / 2,
+                    (kp3d["left_knee"][2] + kp3d["right_knee"][2]) / 2
+                ]
+
                 angles = {
-                    "left_shoulder":  calculate_angle_3d(kp3d["left_hip"], kp3d["left_shoulder"], kp3d["left_elbow"]),
-                    "right_shoulder": calculate_angle_3d(kp3d["right_hip"], kp3d["right_shoulder"], kp3d["right_elbow"]),
-                    "left_elbow":     calculate_angle_3d(kp3d["left_shoulder"], kp3d["left_elbow"], kp3d["left_wrist"]),
-                    "right_elbow":    calculate_angle_3d(kp3d["right_shoulder"], kp3d["right_elbow"], kp3d["right_wrist"]),
-                    "left_hip":       calculate_angle_3d(kp3d["left_shoulder"], kp3d["left_hip"], kp3d["left_knee"]),
-                    "right_hip":      calculate_angle_3d(kp3d["right_shoulder"], kp3d["right_hip"], kp3d["right_knee"]),
-                    "left_knee":      calculate_angle_3d(kp3d["left_hip"], kp3d["left_knee"], kp3d["left_ankle"]),
-                    "right_knee":     calculate_angle_3d(kp3d["right_hip"], kp3d["right_knee"], kp3d["right_ankle"]),
+                    "spine_posture": calculate_angle_3d(kp3d["neck"], kp3d["pelvis"], mid_knee),
+                    "left_knee_extension": calculate_angle_3d(kp3d["left_hip"], kp3d["left_knee"], kp3d["left_ankle"]),
+                    "right_knee_extension": calculate_angle_3d(kp3d["right_hip"], kp3d["right_knee"], kp3d["right_ankle"]),
+                    "left_hip_flexion": calculate_angle_3d(kp3d["left_shoulder"], kp3d["left_hip"], kp3d["left_knee"]),
+                    "right_hip_flexion": calculate_angle_3d(kp3d["right_shoulder"], kp3d["right_hip"], kp3d["right_knee"]),
+                    "left_shoulder_abduction": calculate_angle_3d(kp3d["left_hip"], kp3d["left_shoulder"], kp3d["left_elbow"]),
+                    "right_shoulder_abduction": calculate_angle_3d(kp3d["right_hip"], kp3d["right_shoulder"], kp3d["right_elbow"]),
+                    "left_elbow_extension": calculate_angle_3d(kp3d["left_shoulder"], kp3d["left_elbow"], kp3d["left_wrist"]),
+                    "right_elbow_extension": calculate_angle_3d(kp3d["right_shoulder"], kp3d["right_elbow"], kp3d["right_wrist"]),
                 }
                 frames_data.append({
                     "frame_index": valid_frames_meta[i]["frame_index"],
@@ -590,10 +660,6 @@ async def cleanup(req: CleanupRequest):
         except:
             pass
     return {"status": "success", "removed": removed}
-
-@app.get("/ping")
-async def health_check():
-    return {"status": "healthy"}
 
 if __name__ == "__main__":
     uvicorn.run("local_pose_3d_server:app", host="0.0.0.0", port=8000, reload=False)
