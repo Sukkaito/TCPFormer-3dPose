@@ -7,6 +7,7 @@ import base64
 import asyncio
 import requests
 import numpy as np
+import logging
 from typing import Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -56,6 +57,12 @@ MP_IDX = {
     "left_ankle": 27, "right_ankle": 28,
 }
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("local_pose_3d_server")
+
 app = FastAPI(title="Local Pose 3D Server", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -75,7 +82,7 @@ TCPFORMER_FRAMES = 81
 tcpformer_model = None
 
 try:
-    print("Loading TCPFormer model...")
+    logger.info("Loading TCPFormer model...")
     # Initialize model
     tcpformer_model = MemoryInducedTransformer(
         n_layers=16, dim_in=3, dim_feat=128, mlp_ratio=4, hierarchical=False,
@@ -93,22 +100,22 @@ try:
             new_state_dict[name] = v
         tcpformer_model.load_state_dict(new_state_dict, strict=False)
         tcpformer_model.eval()
-        print("TCPFormer loaded successfully.")
+        logger.info("TCPFormer loaded successfully.")
     else:
-        print(f"Warning: Model weights {ckpt_path} not found! TCPFormer will output random predictions.")
+        logger.warning(f"Model weights {ckpt_path} not found! TCPFormer will output random predictions.")
 except Exception as e:
-    print(f"Failed to load TCPFormer: {e}")
+    logger.error(f"Failed to load TCPFormer: {e}")
     tcpformer_model = None
 
 yolo_model = None
 try:
-    print("Loading YOLO model for multi-person tracking...")
+    logger.info("Loading YOLO model for multi-person tracking...")
     from ultralytics import YOLO
-    yolo_model = YOLO('yolov8n.pt')
+    yolo_model = YOLO('./yolov8n.pt')
     yolo_model.to(DEVICE)
-    print("YOLO loaded successfully.")
+    logger.info("YOLO loaded successfully.")
 except Exception as e:
-    print(f"Failed to load YOLO: {e}")
+    logger.warning(f"Failed to load YOLO: {e}")
 
 # =========================
 # DTO
@@ -510,7 +517,7 @@ def cleanup_video(video_path: str) -> bool:
             os.remove(video_path)
             return True
     except Exception as e:
-        print(f"Warning: Không xóa được video {video_path}: {str(e)}")
+        logger.warning(f"Không xóa được video {video_path}: {str(e)}")
     return False
 
 def get_rating(score: float) -> str:
